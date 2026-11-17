@@ -1,0 +1,136 @@
+name: Gapira Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gapira-android-build
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Gapira APK
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android packages
+        run: |
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "ndk;27.2.12479018" \
+            "cmake;3.22.1"
+
+      - name: Install AndroidX Media
+        run: |
+          mkdir -p TMessagesProj_Modules
+
+          git clone --depth 1 \
+            --branch telegram-v1.10.1-ffmpeg \
+            https://github.com/Arseny271/media.git \
+            TMessagesProj_Modules/media
+
+          test -f TMessagesProj_Modules/media/core_settings.gradle
+          test -d TMessagesProj_Modules/media/libraries/exoplayer
+          test -d TMessagesProj_Modules/media/libraries/decoder_ffmpeg
+          test -d TMessagesProj_Modules/media/libraries/session
+
+      - name: Configure Android SDK
+        run: |
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
+
+      - name: Validate project
+        run: |
+          chmod +x gradlew
+          git diff --check
+
+      - name: Discover APK task
+        id: task
+        run: |
+          set -o pipefail
+
+          ./gradlew --no-daemon --console=plain \
+            :TMessagesProj_App:tasks --all 2>&1 | tee gradle-tasks.log
+
+          if grep -Eq 'assembleAfatDebug([[:space:]]|$)' gradle-tasks.log; then
+            TASK=":TMessagesProj_App:assembleAfatDebug"
+          elif grep -Eq 'assembleDebug([[:space:]]|$)' gradle-tasks.log; then
+            TASK=":TMessagesProj_App:assembleDebug"
+          else
+            echo "No supported Debug task found."
+            grep -i assemble gradle-tasks.log || true
+            exit 1
+          fi
+
+          echo "name=$TASK" >> "$GITHUB_OUTPUT"
+          echo "Selected task: $TASK"
+
+      - name: Build APK
+        run: |
+          set -o pipefail
+          ./gradlew --no-daemon --stacktrace --console=plain \
+            "${{ steps.task.outputs.name }}" 2>&1 | tee build.log
+
+      - name: Collect APK
+        if: success()
+        run: |
+          mkdir -p output
+
+          find . -type f \
+            -path '*/build/outputs/apk/*' \
+            -name '*.apk' \
+            -not -path './output/*' \
+            -print
+
+          find . -type f \
+            -path '*/build/outputs/apk/*' \
+            -name '*.apk' \
+            -not -path './output/*' \
+            -exec cp -v {} output/ \;
+
+          if ! find output -name '*.apk' -print -quit | grep -q .; then
+            echo "No APK was generated."
+            exit 1
+          fi
+
+          sha256sum output/*.apk
+
+      - name: Upload APK
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Gapira-Android-APK
+          path: output/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Gapira-Build-Logs
+          path: |
+            gradle-tasks.log
+            build.log
+          if-no-files-found: ignore
+          retention-days: 7
