@@ -1,17 +1,7 @@
-name: Build Gapira Android
+name: Build Telegram Android
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-
-permissions:
-  contents: read
-
-concurrency:
-  group: gapira-android-build
-  cancel-in-progress: true
 
 jobs:
   build:
@@ -19,97 +9,166 @@ jobs:
     timeout-minutes: 180
 
     steps:
-      - name: Checkout Gapira Source
+
+      # 1. دریافت مستقیم سورس از مخزن خودت
+      - name: Checkout My Telegram Source
         uses: actions/checkout@v4
         with:
-          repository: amirhesam1390/gapira
-          ref: main
-          submodules: false
+          repository: amirhosinhosinix-jpg/Nava-Android
+          ref: master
+          submodules: recursive
           fetch-depth: 1
 
+      # 2. Java 17
       - name: Setup Java
         uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
 
+      # 3. Android SDK
       - name: Setup Android
         uses: android-actions/setup-android@v4
 
+      # 4. آزاد کردن فضای اضافی
       - name: Free disk space
         run: |
           echo "=== BEFORE CLEANUP ==="
           df -h
+
           sudo rm -rf /usr/local/lib/android/sdk/system-images || true
           sudo rm -rf /usr/local/lib/android/sdk/emulator || true
           sudo rm -rf /usr/local/share/powershell || true
           sudo rm -rf /usr/share/dotnet || true
           sudo rm -rf /opt/ghc || true
           sudo rm -rf /usr/local/share/boost || true
+
           sudo apt-get clean
+
           echo "=== AFTER CLEANUP ==="
           df -h
 
+      # 5. بررسی سورس مخزن خودت
+      - name: Verify Telegram Source
+        run: |
+          set -e
+
+          echo "================================"
+          echo "VERIFYING TELEGRAM SOURCE"
+          echo "================================"
+
+          echo "Repository:"
+          git remote -v
+
+          echo
+          echo "Current commit:"
+          git rev-parse HEAD
+
+          echo
+          echo "Current branch:"
+          git branch --show-current
+
+          echo
+          echo "Checking gradlew..."
+
+          test -f gradlew || {
+            echo "ERROR: gradlew not found!"
+            exit 1
+          }
+
+          echo
+          echo "Checking settings.gradle..."
+
+          test -f settings.gradle || {
+            echo "ERROR: settings.gradle not found!"
+            exit 1
+          }
+
+          echo
+          echo "Checking core_settings.gradle..."
+
+          test -f TMessagesProj_Modules/media/core_settings.gradle || {
+            echo "ERROR: TMessagesProj_Modules/media/core_settings.gradle NOT FOUND!"
+            echo
+            echo "=== TMessagesProj_Modules ==="
+            find TMessagesProj_Modules -maxdepth 5 -type f 2>/dev/null || true
+            exit 1
+          }
+
+          echo
+          echo "================================"
+          echo "SOURCE CHECK PASSED"
+          echo "================================"
+
+      # 6. نصب فقط SDK و NDK مورد نیاز
       - name: Install Android SDK and NDK
         run: |
           yes | sdkmanager --licenses || true
+
           sdkmanager \
             "platform-tools" \
             "platforms;android-36" \
             "build-tools;36.0.0" \
             "ndk;27.2.12479018"
+
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
 
-      - name: Patch jlatexmath
-        run: bash scripts/patch_jlatexmath.sh
-
-      - name: Ensure AndroidX Media
+      # 7. بررسی فضای بعد از NDK
+      - name: Check disk after NDK
         run: |
-          set -e
-          if [ ! -f TMessagesProj_Modules/media/core_settings.gradle ]; then
-            mkdir -p TMessagesProj_Modules
-            rm -rf TMessagesProj_Modules/media
-            git clone --depth 1 \
-              --branch telegram-v1.10.1-ffmpeg \
-              https://github.com/Arseny271/media.git \
-              TMessagesProj_Modules/media
-          fi
-          test -f TMessagesProj_Modules/media/core_settings.gradle
-          test -d TMessagesProj_Modules/media/libraries/exoplayer
-          test -d TMessagesProj_Modules/media/libraries/decoder_ffmpeg
-          test -d TMessagesProj_Modules/media/libraries/session
-          python3 - <<'PYMEDIA'
-          from pathlib import Path
-          import re
-          p = Path("TMessagesProj_Modules/media/libraries/common/build.gradle")
-          if not p.is_file():
-              print("WARN: common/build.gradle not found"); raise SystemExit(0)
-          lines = p.read_text().splitlines(keepends=True)
-          constraints = next((i for i,l in enumerate(lines) if l.strip()=="constraints {"), None)
-          api = next((i for i,l in enumerate(lines) if re.match(r"^\s*api\s*\(", l)), None)
-          if constraints is None or api is None or api <= constraints:
-              print("No constraints wrapper to fix"); raise SystemExit(0)
-          body = "".join(lines[constraints+1:api])
-          if "implementation project(" not in body:
-              print("Unexpected constraints body"); raise SystemExit(0)
-          closing = api - 1
-          while closing > constraints and not lines[closing].strip():
-              closing -= 1
-          if lines[closing].strip() != "}":
-              print("Cannot locate closing brace"); raise SystemExit(0)
-          del lines[closing]; del lines[constraints]
-          p.write_text("".join(lines))
-          print("SUCCESS: media common/build.gradle patched")
-          PYMEDIA
+          echo "=== DISK ==="
+          df -h
 
+          echo "=== ANDROID SDK SIZE ==="
+          du -sh "$ANDROID_HOME" 2>/dev/null || true
+
+          echo "=== NDK SIZE ==="
+          du -sh "$ANDROID_HOME/ndk/27.2.12479018" 2>/dev/null || true
+
+      # 8. فقط ARM64
+      - name: Keep only arm64-v8a
+        run: |
+          grep -rlE "abiFilters|armeabi-v7a" \
+            --include='build.gradle' \
+            --include='*.gradle' \
+            . 2>/dev/null |
+          while read -r f; do
+            echo "Patching: $f"
+
+            sed -i -E \
+              '/abiFilters/ s/abiFilters.*/abiFilters "arm64-v8a"/' \
+              "$f" || true
+
+            sed -i -E \
+              '/include +"armeabi-v7a"/ s/include.*/include "arm64-v8a"/' \
+              "$f" || true
+          done
+
+      # 9. Gradle تنظیمات
+      - name: Configure Gradle
+        run: |
+          mkdir -p ~/.gradle
+
+          cat > ~/.gradle/gradle.properties << 'EOF'
+          org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g
+          org.gradle.parallel=true
+          org.gradle.caching=true
+          org.gradle.daemon=false
+          android.useAndroidX=true
+          EOF
+
+      # 10. ccache
       - name: Install ccache
         run: |
           sudo apt-get update
           sudo apt-get install -y ccache
+
           ccache --max-size=2G
+
           echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
 
+      # 11. Cache ccache
       - name: Cache ccache
         uses: actions/cache@v4
         with:
@@ -118,6 +177,7 @@ jobs:
           restore-keys: |
             ccache-${{ runner.os }}-
 
+      # 12. Gradle cache
       - name: Cache Gradle
         uses: actions/cache@v4
         with:
@@ -128,68 +188,51 @@ jobs:
           restore-keys: |
             gradle-${{ runner.os }}-
 
-      - name: Configure local.properties
+      # 13. فضای قبل از Build
+      - name: Check disk before build
         run: |
-          echo "sdk.dir=$ANDROID_HOME" > local.properties
-          echo "ndk.dir=$ANDROID_HOME/ndk/27.2.12479018" >> local.properties
+          echo "=== DISK BEFORE BUILD ==="
+          df -h
 
+          echo "=== GRADLE ==="
+          du -sh ~/.gradle 2>/dev/null || true
+
+          echo "=== CCACHE ==="
+          du -sh ~/.ccache 2>/dev/null || true
+
+      # 14. Gradle executable
       - name: Make Gradle executable
         run: chmod +x gradlew
 
-      - name: Discover APK task
-        id: task
+      # 15. Build
+      - name: Build Telegram Debug APK
         run: |
-          set -o pipefail
-          ./gradlew --no-daemon --console=plain \
-            :TMessagesProj_App:tasks --all 2>&1 | tee gradle-tasks.log || true
-          if grep -Eq 'assembleAfatDebug([[:space:]]|$)' gradle-tasks.log; then
-            TASK=":TMessagesProj_App:assembleAfatDebug"
-          elif grep -Eq 'assembleDebug([[:space:]]|$)' gradle-tasks.log; then
-            TASK=":TMessagesProj_App:assembleDebug"
-          else
-            echo "No supported Debug task found."
-            grep -i assemble gradle-tasks.log || true
-            exit 1
-          fi
-          echo "name=$TASK" >> "$GITHUB_OUTPUT"
-          echo "Selected task: $TASK"
-
-      - name: Build APK
-        run: |
-          set -o pipefail
-          ./gradlew "${{ steps.task.outputs.name }}" \
-            --no-daemon --stacktrace --console=plain --max-workers=2 \
-            2>&1 | tee build.log
+          ./gradlew assembleDebug \
+            --no-daemon \
+            --stacktrace \
+            --max-workers=2
         env:
           CC: ccache clang
           CXX: ccache clang++
 
+      # 16. پیدا کردن APK
       - name: Find APK
         if: success()
         run: |
           echo "=== APK FILES ==="
           find . -type f -name "*.apk" -exec ls -lh {} \;
 
+      # 17. آپلود APK
       - name: Upload APK
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: Gapira-Debug-APK
+          name: Telegram-Debug-APK
           path: "**/build/outputs/apk/**/*.apk"
           if-no-files-found: error
           retention-days: 14
 
-      - name: Upload build logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: Gapira-Build-Logs
-          path: |
-            gradle-tasks.log
-            build.log
-          if-no-files-found: ignore
-          retention-days: 7
-
+      # 18. فضای نهایی
       - name: Final disk usage
         if: always()
         run: |
