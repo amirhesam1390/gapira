@@ -64,7 +64,7 @@ jobs:
           if [ ! -f TMessagesProj_Modules/media/core_settings.gradle ]; then
             rm -rf TMessagesProj_Modules/media
             git clone --depth 1 \
-              https://github.com/Arseny271/media.git \
+              https://github.com/AtlasXV/androidx-media.git \
               TMessagesProj_Modules/media
           fi
 
