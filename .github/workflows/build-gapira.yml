@@ -60,27 +60,44 @@ jobs:
 
           p = Path("TMessagesProj_Modules/media/libraries/common/build.gradle")
           if not p.is_file():
-              raise SystemExit("ERROR: AndroidX Media common/build.gradle not found")
+              raise SystemExit("ERROR: common/build.gradle not found")
 
-          source = p.read_text()
+          lines = p.read_text().splitlines(keepends=True)
 
-          pattern = re.compile(
-              r"(?m)^    constraints \{\n(.*?)^    \}\n(?=    api\s*\()",
-              re.S
+          constraints = next(
+              (i for i, line in enumerate(lines)
+               if line.strip() == "constraints {"),
+              None
           )
 
-          updated, count = pattern.subn(lambda m: m.group(1), source, count=1)
+          api = next(
+              (i for i, line in enumerate(lines)
+               if re.match(r"^\s*api\s*\(", line)),
+              None
+          )
 
-          if count == 1:
-              p.write_text(updated)
-              print("AndroidX Media Gradle compatibility patch applied.")
-          elif "implementation project(" in source and "constraints {" not in source:
-              print("AndroidX Media patch already applied.")
-          else:
-              raise SystemExit(
-                  "ERROR: Unexpected common/build.gradle structure. "
-                  "No automatic modification was made."
-              )
+          if constraints is None or api is None or api <= constraints:
+              raise SystemExit("ERROR: Expected Gradle block was not found.")
+
+          body = "".join(lines[constraints + 1:api])
+
+          if "implementation project(" not in body:
+              raise SystemExit("ERROR: Unexpected constraints block content.")
+
+          closing = api - 1
+          while closing > constraints and not lines[closing].strip():
+              closing -= 1
+
+          if lines[closing].strip() != "}":
+              raise SystemExit("ERROR: Could not safely locate constraints closing brace.")
+
+          del lines[closing]
+          del lines[constraints]
+
+          p.write_text("".join(lines))
+
+          print("SUCCESS: Removed invalid constraints wrapper.")
+          print("ARM32 and ARM64 build flavor will be checked by Gradle.")
           PYMEDIA
 
           echo "===== PATCHED MEDIA GRADLE FILE ====="
