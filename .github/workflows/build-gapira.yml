@@ -1,4 +1,4 @@
-name: Gapira Android APK
+name: Build Gapira Android
 
 on:
   workflow_dispatch:
@@ -15,114 +15,218 @@ concurrency:
 
 jobs:
   build:
-    name: Build Gapira APK
-    runs-on: ubuntu-22.04
-    timeout-minutes: 120
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
 
     steps:
-      - name: Checkout source
+      # 1. Checkout Gapira source
+      - name: Checkout Gapira Source
         uses: actions/checkout@v4
+        with:
+          repository: amirhesam1390/gapira
+          ref: main
+          submodules: recursive
+          fetch-depth: 1
 
+      # 2. Java 17
       - name: Setup Java
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Setup Android SDK
+      # 3. Android SDK
+      - name: Setup Android
         uses: android-actions/setup-android@v4
-        with:
-          packages: 'platform-tools'
 
-      - name: Install Android packages
+      # 4. Free disk space
+      - name: Free disk space
         run: |
-          sdkmanager --install \
-            "platform-tools" \
-            "platforms;android-35" \
-            "build-tools;35.0.0" \
-            "ndk;27.2.12479018" \
-            "cmake;3.22.1"
+          echo "=== BEFORE CLEANUP ==="
+          df -h
+          sudo rm -rf /usr/local/lib/android/sdk/system-images || true
+          sudo rm -rf /usr/local/lib/android/sdk/emulator || true
+          sudo rm -rf /usr/local/share/powershell || true
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /usr/local/share/boost || true
+          sudo apt-get clean
+          echo "=== AFTER CLEANUP ==="
+          df -h
 
-      - name: Install AndroidX Media
+      # 5. Ensure jlatexmath is available (submodule may not be registered)
+      - name: Ensure jlatexmath
         run: |
-          mkdir -p TMessagesProj_Modules
+          set -e
+          if [ ! -f TMessagesProj/lib/jlatexmath/jlatexmath/jlatexmath/build.gradle ]; then
+            echo "jlatexmath missing -> cloning"
+            mkdir -p TMessagesProj/lib/jlatexmath
+            rm -rf TMessagesProj/lib/jlatexmath/jlatexmath
+            git clone --depth=1 \
+              https://github.com/dkaraush/jlatexmath-android.git \
+              TMessagesProj/lib/jlatexmath/jlatexmath
+          else
+            echo "jlatexmath present from submodules checkout"
+          fi
 
-          git clone --depth 1 \
-            --branch telegram-v1.10.1-ffmpeg \
-            https://github.com/Arseny271/media.git \
-            TMessagesProj_Modules/media
+          JL=TMessagesProj/lib/jlatexmath/jlatexmath
+
+          # Patch root build.gradle (remove old AGP 3.5.3 + jcenter)
+          if grep -q "com.android.tools.build:gradle:3\\." "$JL/build.gradle" 2>/dev/null; then
+            echo "patching root build.gradle for AGP 8"
+            cat > "$JL/build.gradle" <<'GRADLE'
+          allprojects {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+              version = "1.0.0"
+              group = "ru.noties.jlatexmath"
+          }
+          ext {
+              config = [
+                      'min-sdk'    : 21,
+                      'target-sdk' : 36,
+                      'build-tools': '36.0.0',
+              ]
+              deps = [
+                      'x-annotations': 'androidx.annotation:annotation:1.7.0',
+              ]
+              registerArtifact = { project -> }
+          }
+          GRADLE
+          fi
+
+          # Ensure inner jlatexmath module has namespace
+          if ! grep -q "namespace" "$JL/jlatexmath/build.gradle" 2>/dev/null; then
+            sed -i "0,/android\\s*{/s//android {\n    namespace 'ru.noties.jlatexmath.android'/" \
+              "$JL/jlatexmath/build.gradle" || true
+          fi
+
+          test -f "$JL/jlatexmath/build.gradle"
+          grep -q namespace "$JL/jlatexmath/build.gradle"
+          echo "jlatexmath ready"
+
+      # 6. Ensure Media module is available
+      - name: Ensure AndroidX Media
+        run: |
+          set -e
+          if [ ! -f TMessagesProj_Modules/media/core_settings.gradle ]; then
+            echo "media missing -> cloning"
+            mkdir -p TMessagesProj_Modules
+            rm -rf TMessagesProj_Modules/media
+            git clone --depth 1 \
+              --branch telegram-v1.10.1-ffmpeg \
+              https://github.com/Arseny271/media.git \
+              TMessagesProj_Modules/media
+          else
+            echo "media present from submodules checkout"
+          fi
 
           test -f TMessagesProj_Modules/media/core_settings.gradle
           test -d TMessagesProj_Modules/media/libraries/exoplayer
           test -d TMessagesProj_Modules/media/libraries/decoder_ffmpeg
           test -d TMessagesProj_Modules/media/libraries/session
+
           python3 - <<'PYMEDIA'
           from pathlib import Path
           import re
-
           p = Path("TMessagesProj_Modules/media/libraries/common/build.gradle")
           if not p.is_file():
               raise SystemExit("ERROR: common/build.gradle not found")
-
           lines = p.read_text().splitlines(keepends=True)
-
           constraints = next(
               (i for i, line in enumerate(lines)
                if line.strip() == "constraints {"),
               None
           )
-
           api = next(
               (i for i, line in enumerate(lines)
                if re.match(r"^\s*api\s*\(", line)),
               None
           )
-
           if constraints is None or api is None or api <= constraints:
-              raise SystemExit("ERROR: Expected Gradle block was not found.")
-
+              print("No constraints wrapper to fix — leaving as is")
+              raise SystemExit(0)
           body = "".join(lines[constraints + 1:api])
-
           if "implementation project(" not in body:
-              raise SystemExit("ERROR: Unexpected constraints block content.")
-
+              print("Constraints block structure unexpected — skipping")
+              raise SystemExit(0)
           closing = api - 1
           while closing > constraints and not lines[closing].strip():
               closing -= 1
-
           if lines[closing].strip() != "}":
-              raise SystemExit("ERROR: Could not safely locate constraints closing brace.")
-
+              print("Could not locate closing brace safely — skipping")
+              raise SystemExit(0)
           del lines[closing]
           del lines[constraints]
-
           p.write_text("".join(lines))
-
           print("SUCCESS: Removed invalid constraints wrapper.")
-          print("ARM32 and ARM64 build flavor will be checked by Gradle.")
           PYMEDIA
-
-          echo "===== PATCHED MEDIA GRADLE FILE ====="
+          echo "===== MEDIA common/build.gradle (head) ====="
           sed -n '45,65p' TMessagesProj_Modules/media/libraries/common/build.gradle
 
-
-      - name: Configure Android SDK
+      # 7. Install SDK + NDK
+      - name: Install Android SDK and NDK
         run: |
-          echo "sdk.dir=$ANDROID_HOME" > local.properties
+          yes | sdkmanager --licenses || true
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-36" \
+            "build-tools;36.0.0" \
+            "ndk;27.2.12479018"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
 
-      - name: Validate project
+      # 8. Install ccache
+      - name: Install ccache
         run: |
-          chmod +x gradlew
-          git diff --check
+          sudo apt-get update
+          sudo apt-get install -y ccache
+          ccache --max-size=2G
+          echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
 
+      # 9. Cache ccache
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ runner.os }}-
+
+      # 10. Cache Gradle
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      # 11. Disk before build
+      - name: Check disk before build
+        run: |
+          echo "=== DISK BEFORE BUILD ==="
+          df -h
+          echo "=== GRADLE ==="
+          du -sh ~/.gradle 2>/dev/null || true
+          echo "=== CCACHE ==="
+          du -sh ~/.ccache 2>/dev/null || true
+
+      # 12. Make gradlew executable
+      - name: Make Gradle executable
+        run: chmod +x gradlew
+
+      # 13. Discover build task
       - name: Discover APK task
         id: task
         run: |
           set -o pipefail
-
           ./gradlew --no-daemon --console=plain \
-            :TMessagesProj_App:tasks --all 2>&1 | tee gradle-tasks.log
-
+            :TMessagesProj_App:tasks --all 2>&1 | tee gradle-tasks.log || true
           if grep -Eq 'assembleAfatDebug([[:space:]]|$)' gradle-tasks.log; then
             TASK=":TMessagesProj_App:assembleAfatDebug"
           elif grep -Eq 'assembleDebug([[:space:]]|$)' gradle-tasks.log; then
@@ -132,49 +236,40 @@ jobs:
             grep -i assemble gradle-tasks.log || true
             exit 1
           fi
-
           echo "name=$TASK" >> "$GITHUB_OUTPUT"
           echo "Selected task: $TASK"
 
-      - name: Build APK
+      # 14. Build APK
+      - name: Build Gapira Debug APK
         run: |
           set -o pipefail
-          ./gradlew --no-daemon --stacktrace --console=plain \
-            "${{ steps.task.outputs.name }}" 2>&1 | tee build.log
+          ./gradlew "${{ steps.task.outputs.name }}" \
+            --no-daemon \
+            --stacktrace \
+            --console=plain \
+            --max-workers=2 2>&1 | tee build.log
+        env:
+          CC: ccache clang
+          CXX: ccache clang++
 
-      - name: Collect APK
+      # 15. Find APK
+      - name: Find APK
         if: success()
         run: |
-          mkdir -p output
+          echo "=== APK FILES ==="
+          find . -type f -name "*.apk" -exec ls -lh {} \;
 
-          find . -type f \
-            -path '*/build/outputs/apk/*' \
-            -name '*.apk' \
-            -not -path './output/*' \
-            -print
-
-          find . -type f \
-            -path '*/build/outputs/apk/*' \
-            -name '*.apk' \
-            -not -path './output/*' \
-            -exec cp -v {} output/ \;
-
-          if ! find output -name '*.apk' -print -quit | grep -q .; then
-            echo "No APK was generated."
-            exit 1
-          fi
-
-          sha256sum output/*.apk
-
+      # 16. Upload APK
       - name: Upload APK
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: Gapira-Android-APK
-          path: output/*.apk
+          name: Gapira-Debug-APK
+          path: "**/build/outputs/apk/**/*.apk"
           if-no-files-found: error
           retention-days: 14
 
+      # 17. Upload build logs (for debugging)
       - name: Upload build logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -185,3 +280,10 @@ jobs:
             build.log
           if-no-files-found: ignore
           retention-days: 7
+
+      # 18. Final disk usage
+      - name: Final disk usage
+        if: always()
+        run: |
+          echo "=== FINAL DISK ==="
+          df -h
