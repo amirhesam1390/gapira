@@ -54,6 +54,38 @@ jobs:
           test -d TMessagesProj_Modules/media/libraries/exoplayer
           test -d TMessagesProj_Modules/media/libraries/decoder_ffmpeg
           test -d TMessagesProj_Modules/media/libraries/session
+          python3 - <<'PYMEDIA'
+          from pathlib import Path
+          import re
+
+          p = Path("TMessagesProj_Modules/media/libraries/common/build.gradle")
+          if not p.is_file():
+              raise SystemExit("ERROR: AndroidX Media common/build.gradle not found")
+
+          source = p.read_text()
+
+          pattern = re.compile(
+              r"(?m)^    constraints \{\n(.*?)^    \}\n(?=    api\s*\()",
+              re.S
+          )
+
+          updated, count = pattern.subn(lambda m: m.group(1), source, count=1)
+
+          if count == 1:
+              p.write_text(updated)
+              print("AndroidX Media Gradle compatibility patch applied.")
+          elif "implementation project(" in source and "constraints {" not in source:
+              print("AndroidX Media patch already applied.")
+          else:
+              raise SystemExit(
+                  "ERROR: Unexpected common/build.gradle structure. "
+                  "No automatic modification was made."
+              )
+          PYMEDIA
+
+          echo "===== PATCHED MEDIA GRADLE FILE ====="
+          sed -n '45,65p' TMessagesProj_Modules/media/libraries/common/build.gradle
+
 
       - name: Configure Android SDK
         run: |
