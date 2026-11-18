@@ -1,11 +1,9 @@
-
-name: Build Telegram Android
+name: Build Gapira Android
 
 on:
   workflow_dispatch:
-
-permissions:
-  contents: read
+  push:
+    branches: [ master, main ]
 
 jobs:
   build:
@@ -13,251 +11,148 @@ jobs:
     timeout-minutes: 180
 
     steps:
-
-      # 1. Checkout source
-      - name: Checkout Telegram Source
+      - name: Checkout
         uses: actions/checkout@v4
         with:
-          repository: amirhosinhosinix-jpg/Nava-Android
-          ref: master
           submodules: recursive
           fetch-depth: 1
 
-      # 2. Java 17
-      - name: Setup Java
-        uses: actions/setup-java@v5
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: '21'
 
-      # 3. Android SDK
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v4
+        uses: android-actions/setup-android@v3
 
-      # 4. Free disk space
-      - name: Free Disk Space
+      - name: Free disk space
         run: |
-          echo "=== DISK BEFORE ==="
+          echo "=== BEFORE ==="
           df -h
-
           sudo rm -rf /usr/local/lib/android/sdk/system-images || true
           sudo rm -rf /usr/local/lib/android/sdk/emulator || true
           sudo rm -rf /usr/local/share/powershell || true
           sudo rm -rf /usr/share/dotnet || true
           sudo rm -rf /opt/ghc || true
           sudo rm -rf /usr/local/share/boost || true
-
           sudo apt-get clean
-
-          echo "=== DISK AFTER ==="
+          echo "=== AFTER ==="
           df -h
 
-      # 5. Verify source
-      - name: Verify Source
+      - name: Install SDK packages
         run: |
           set -e
-
-          echo "=== REPOSITORY ==="
-          git remote -v
-
-          echo "=== COMMIT ==="
-          git rev-parse HEAD
-
-          echo "=== CHECK FILES ==="
-
-          test -f gradlew
-          test -f settings.gradle
-          test -f TMessagesProj_Modules/media/core_settings.gradle
-
-          chmod +x gradlew
-
-          echo "SOURCE CHECK PASSED"
-
-      # 6. Fix duplicate logo resources
-      - name: Fix Duplicate Logo Resources
-        shell: bash
-        run: |
-          set -e
-
-          RES="TMessagesProj/src/main/res"
-
-          echo "=== LOGO RESOURCE SCAN ==="
-
-          COUNT=0
-
-          while IFS= read -r -d '' png; do
-            webp="${png%.png}.webp"
-
-            if [ -f "$webp" ]; then
-              echo "Duplicate resource:"
-              echo "$png"
-              echo "$webp"
-
-              rm -f "$webp"
-
-              COUNT=$((COUNT + 1))
-            fi
-          done < <(
-            find "$RES" -type f -name 'logo_middle.png' -print0
-          )
-
-          echo "Removed duplicates: $COUNT"
-
-          echo "=== REMAINING LOGO FILES ==="
-
-          find "$RES" -type f -name 'logo_middle.*' -print
-
-          echo "RESOURCE CHECK PASSED"
-
-      # 7. Install SDK and NDK
-      - name: Install Android SDK and NDK
-        run: |
-          yes | sdkmanager --licenses || true
-
-          sdkmanager \
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          sdkmanager --install \
             "platform-tools" \
             "platforms;android-36" \
             "build-tools;36.0.0" \
-            "ndk;27.2.12479018"
+            "ndk;27.2.12479018" \
+            "cmake;3.22.1"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> $GITHUB_ENV
+          echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/27.2.12479018" >> $GITHUB_ENV
 
-          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
-          echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
-
-      # 8. Verify environment
-      - name: Verify Android Environment
+      - name: Verify source
         run: |
-          echo "=== JAVA ==="
-          java -version
+          set -e
+          test -f gradlew || (echo "gradlew missing" && exit 1)
+          test -f settings.gradle || (echo "settings.gradle missing" && exit 1)
+          test -f TMessagesProj_Modules/media/core_settings.gradle || (echo "submodules missing" && exit 1)
+          echo "source OK"
 
-          echo "=== ANDROID ==="
-          echo "$ANDROID_HOME"
-
-          echo "=== NDK ==="
-          ls "$ANDROID_HOME/ndk/27.2.12479018"
-
-          echo "=== DISK ==="
-          df -h
-
-      # 9. Gradle configuration
-      - name: Configure Gradle
+      - name: Pre-check contents
         run: |
-          mkdir -p ~/.gradle
+          echo "=== Telegram count ==="
+          grep -rc "Telegram" TMessagesProj/src/main/res/ | awk -F: '{s+=$2} END {print "total:", s+0}'
+          echo "=== AppName ==="
+          grep -A0 'name="AppName"' TMessagesProj/src/main/res/values/strings.xml | head -1
+          echo "=== Server IP ==="
+          grep -m2 '5\.102\.37\.' TMessagesProj/jni/tgnet/ConnectionsManager.cpp
+          echo "=== ABI ==="
+          grep -m1 'abiFilters' TMessagesProj/build.gradle
 
-          cat > ~/.gradle/gradle.properties << 'EOF'
-          org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8
+      - name: Setup keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.OWPENGRAM_KEYSTORE_B64 }}
+        run: |
+          set -e
+          KS=TMessagesProj/config/release.keystore
+          mkdir -p "$(dirname "$KS")"
+          if [ -n "${KEYSTORE_B64:-}" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$KS"
+            echo "keystore from secret"
+          else
+            keytool -genkeypair -v -keystore "$KS" \
+              -alias owpengram -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass owpengram123 -keypass owpengram123 \
+              -dname "CN=Gapira,OU=Dev,O=Gapira,L=NA,S=NA,C=IR"
+            echo "temp keystore"
+          fi
+
+      - name: Configure gradle
+        run: |
+          cat > gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g
           org.gradle.parallel=true
           org.gradle.caching=true
           org.gradle.daemon=false
           android.useAndroidX=true
+          RELEASE_KEY_PASSWORD=owpengram123
+          RELEASE_KEY_ALIAS=owpengram
+          RELEASE_STORE_PASSWORD=owpengram123
           EOF
 
-      # 10. Install CCache
-      - name: Install CCache
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ccache
+      - name: Make gradlew executable
+        run: chmod +x gradlew
 
-          mkdir -p ~/.ccache
-
-          ccache --max-size=2G
-
-          echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
-
-      # 11. Cache CCache
-      - name: Cache CCache
-        uses: actions/cache@v4
-        with:
-          path: ~/.ccache
-          key: ccache-${{ runner.os }}-${{ github.sha }}
-          restore-keys: |
-            ccache-${{ runner.os }}-
-
-      # 12. Cache Gradle
       - name: Cache Gradle
         uses: actions/cache@v4
         with:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: |
-            gradle-${{ runner.os }}-
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*','**/gradle-wrapper.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
 
-      # 13. Disk check
-      - name: Check Disk Before Build
-        run: |
-          echo "=== DISK ==="
-          df -h
-
-          echo "=== GRADLE CACHE ==="
-          du -sh ~/.gradle 2>/dev/null || true
-
-          echo "=== CCACHE ==="
-          du -sh ~/.ccache 2>/dev/null || true
-
-      # 14. Build Debug APK
-      - name: Build Telegram Debug APK
-        shell: bash
+      - name: Build APK
         run: |
           set -o pipefail
+          ./gradlew assembleRelease \
+            --no-daemon --stacktrace --max-workers=2 2>&1 | tee build.log
 
-          ./gradlew assembleDebug \
-            --no-daemon \
-            --stacktrace \
-            --max-workers=2 \
-            --console=plain
-        env:
-          CC: ccache clang
-          CXX: ccache clang++
+      - name: Find APKs
+        if: always()
+        run: find . -name "*.apk" -exec ls -lh {} \; | tee apks.txt
 
-      # 15. Find APK
-      - name: Find APK
-        if: success()
-        run: |
-          echo "=== APK FILES ==="
-
-          find . -type f -name '*.apk' -exec ls -lh {} \;
-
-          APK_COUNT=$(find . -type f -name '*.apk' | wc -l)
-
-          if [ "$APK_COUNT" -eq 0 ]; then
-            echo "ERROR: APK NOT FOUND"
-            exit 1
-          fi
-
-          echo "APK COUNT: $APK_COUNT"
-
-      # 16. Upload APK
-      - name: Upload Telegram Debug APK
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: Telegram-Debug-APK
-          path: "**/build/outputs/apk/**/*.apk"
-          if-no-files-found: error
-          retention-days: 14
-
-      # 17. Final report
-      - name: Final Build Report
+      - name: Verify APK
         if: always()
         run: |
-          echo "=== FINAL DISK ==="
-          df -h
+          APK=$(find . -name "*.apk" | head -1)
+          if [ -n "$APK" ]; then
+            $ANDROID_HOME/build-tools/36.0.0/apksigner verify --print-certs "$APK" | head -5 || true
+            $ANDROID_HOME/build-tools/36.0.0/aapt dump badging "$APK" | grep -E "package:|native-code" || true
+          fi
 
-          echo "=== CCACHE STATS ==="
-          ccache --show-stats || true
-
-          echo "=== GENERATED APK ==="
-          find . -type f -name '*.apk' -exec ls -lh {} \;
-
-      # 18. Upload diagnostic logs
-      - name: Upload Gradle Diagnostic Logs
-        if: failure()
+      - name: Upload APK
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Telegram-Build-Logs
+          name: Gapira-APK
+          path: "**/*.apk"
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
           path: |
-            **/build/reports/
-            **/build/outputs/logs/
-          if-no-files-found: ignore
-          retention-days: 7
+            build.log
+            apks.txt
+          if-no-files-found: warn
+
+      - name: Final disk
+        if: always()
+        run: df -h
