@@ -1375,19 +1375,19 @@ public class ChatEditActivity extends BaseFragment implements ImageUpdater.Image
             ThemeBind.selectorBackground(editIntroCell, Theme.getSelectorDrawable(false), null, ThemeBind.of(Theme.key_listSelector));
             editIntroCell.setTextAndIcon(getString(R.string.BotEditIntro), R.drawable.msg_log, true);
             infoContainer.addView(editIntroCell, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT));
-            editIntroCell.setOnClickListener(v -> Browser.openUrl(v.getContext(), "https://t.me/BotFather?start=" + getActiveUsername(currentUser) + "-intro"));
+            editIntroCell.setOnClickListener(v -> Browser.openUrl(v.getContext(), "https://gapira.ir/BotFather?start=" + getActiveUsername(currentUser) + "-intro"));
 
             editCommandsCell = new TextCell(context);
             ThemeBind.selectorBackground(editCommandsCell, Theme.getSelectorDrawable(false), null, ThemeBind.of(Theme.key_listSelector));
             editCommandsCell.setTextAndIcon(getString(R.string.BotEditCommands), R.drawable.msg_media, true);
             infoContainer.addView(editCommandsCell, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT));
-            editCommandsCell.setOnClickListener(v -> Browser.openUrl(v.getContext(), "https://t.me/BotFather?start=" + getActiveUsername(currentUser) + "-commands"));
+            editCommandsCell.setOnClickListener(v -> Browser.openUrl(v.getContext(), "https://gapira.ir/BotFather?start=" + getActiveUsername(currentUser) + "-commands"));
 
             changeBotSettingsCell = new TextCell(context);
             ThemeBind.selectorBackground(changeBotSettingsCell, Theme.getSelectorDrawable(false), null, ThemeBind.of(Theme.key_listSelector));
             changeBotSettingsCell.setTextAndIcon(getString(R.string.BotChangeSettings), R.drawable.msg_bot, true);
             infoContainer.addView(changeBotSettingsCell, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT));
-            changeBotSettingsCell.setOnClickListener(v -> Browser.openUrl(v.getContext(), "https://t.me/BotFather?start=" + getActiveUsername(currentUser)));
+            changeBotSettingsCell.setOnClickListener(v -> Browser.openUrl(v.getContext(), "https://gapira.ir/BotFather?start=" + getActiveUsername(currentUser)));
         }
 
         if (currentChat != null) {
@@ -1409,7 +1409,7 @@ public class ChatEditActivity extends BaseFragment implements ImageUpdater.Image
                 span.setSpan(new ClickableSpan() {
                     @Override
                     public void onClick(@NonNull View widget) {
-                        Browser.openUrl(widget.getContext(), "https://t.me/BotFather");
+                        Browser.openUrl(widget.getContext(), "https://gapira.ir/BotFather");
                     }
 
                     @Override

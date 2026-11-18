@@ -1837,7 +1837,7 @@ void ConnectionsManager::initDatacenters() {
     Datacenter *datacenter;
     if (datacenters.find(2) == datacenters.end()) {
         datacenter = new Datacenter(instanceNum, 2);
-        datacenter->addAddressAndPort("5.102.37.137", 2398, 0, "");
+        datacenter->addAddressAndPort("5.102.37.55", 2398, 0, "");
         datacenters[2] = datacenter;
     }
 }
