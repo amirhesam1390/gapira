@@ -3,19 +3,33 @@ name: Build Gapira Android
 on:
   workflow_dispatch:
   push:
-    branches: [ main, master ]
+    branches: [ master, main ]
 
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    timeout-minutes: 240
 
     steps:
-      - name: Checkout
+      - name: Checkout (no submodules first)
         uses: actions/checkout@v4
         with:
-          submodules: recursive
           fetch-depth: 1
+
+      - name: Submodule init (verbose)
+        run: |
+          set -e
+          echo "=== .gitmodules ==="
+          cat .gitmodules | head -40
+          echo "=== init ==="
+          git submodule sync --recursive
+          git submodule update --init --recursive --depth=1 2>&1 | tail -50
+          echo "=== verify ==="
+          git submodule status | head -20
+          echo "--- key files ---"
+          ls TMessagesProj_Modules/media/core_settings.gradle
+          ls TMessagesProj/jni/tgcalls/CMakeLists.txt
+          ls TMessagesProj/jni/third_party/ffmpeg/configure
 
       - name: Setup Java 21
         uses: actions/setup-java@v4
@@ -23,28 +37,23 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Free disk space
+      - name: Locate preinstalled Android SDK
         run: |
-          echo "=== BEFORE ==="
-          df -h
-          sudo rm -rf /usr/local/lib/android/sdk/system-images || true
-          sudo rm -rf /usr/local/lib/android/sdk/emulator || true
-          sudo rm -rf /usr/local/share/powershell || true
-          sudo rm -rf /usr/share/dotnet || true
-          sudo rm -rf /opt/ghc || true
-          sudo rm -rf /usr/local/share/boost || true
-          sudo apt-get clean
-          echo "=== AFTER ==="
-          df -h
+          set -e
+          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          echo "ANDROID_HOME=$SDK" >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=$SDK" >> $GITHUB_ENV
+          SM=$(find "$SDK/cmdline-tools" -name sdkmanager -type f 2>/dev/null | head -1)
+          echo "SDKMANAGER=$SM"
+          [ -n "$SM" ] || (echo "sdkmanager not found" && exit 1)
+          echo "SDKMANAGER=$SM" >> $GITHUB_ENV
+          echo "$(dirname $SM)" >> $GITHUB_PATH
 
       - name: Install SDK packages
         run: |
           set -e
-          yes | sdkmanager --licenses >/dev/null 2>&1 || true
-          sdkmanager --install \
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+          "$SDKMANAGER" --install \
             "platform-tools" \
             "platforms;android-36" \
             "build-tools;36.0.0" \
@@ -53,55 +62,48 @@ jobs:
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> $GITHUB_ENV
           echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/27.2.12479018" >> $GITHUB_ENV
 
-      - name: Verify source
+      - name: Free disk space
         run: |
-          set -e
-          test -f gradlew || (echo "gradlew نیست" && exit 1)
-          test -f settings.gradle || (echo "settings.gradle نیست" && exit 1)
-          test -f TMessagesProj_Modules/media/core_settings.gradle || (echo "submodules ناقص" && exit 1)
-          echo "source OK"
+          df -h
+          sudo rm -rf /usr/local/lib/android/sdk/system-images || true
+          sudo rm -rf /usr/local/lib/android/sdk/emulator || true
+          sudo apt-get clean
+          df -h
 
       - name: Pre-check contents
         run: |
-          echo "=== Telegram count ==="
-          grep -rc "Telegram" TMessagesProj/src/main/res/ | awk -F: '{s+=$2} END {print "total:", s+0}'
-          echo "=== AppName ==="
+          echo "Telegram count:"; grep -rc "Telegram" TMessagesProj/src/main/res/ | awk -F: '{s+=$2} END {print s+0}'
           grep -A0 'name="AppName"' TMessagesProj/src/main/res/values/strings.xml | head -1
-          echo "=== Server IP ==="
-          grep -m2 '5\.102\.37\.' TMessagesProj/jni/tgnet/ConnectionsManager.cpp
-          echo "=== ABI ==="
-          grep -m1 'abiFilters' TMessagesProj/build.gradle
+          grep -m2 '5\.102\.37\.' TMessagesProj/jni/tgnet/ConnectionsManager.cpp || true
 
       - name: Setup keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.OWPENGRAM_KEYSTORE_B64 }}
         run: |
           set -e
           KS=TMessagesProj/config/release.keystore
           mkdir -p "$(dirname "$KS")"
           if [ -n "${KEYSTORE_B64:-}" ]; then
             echo "$KEYSTORE_B64" | base64 -d > "$KS"
-            echo "keystore from secret"
           else
             keytool -genkeypair -v -keystore "$KS" \
               -alias owpengram -keyalg RSA -keysize 2048 -validity 10000 \
               -storepass owpengram123 -keypass owpengram123 \
               -dname "CN=Gapira,OU=Dev,O=Gapira,L=NA,S=NA,C=IR"
-            echo "temp keystore"
           fi
-        env:
-          KEYSTORE_B64: ${{ secrets.OWPENGRAM_KEYSTORE_B64 }}
 
       - name: Configure gradle
         run: |
           cat > gradle.properties <<'EOF'
-org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g
-org.gradle.parallel=true
-org.gradle.caching=true
-org.gradle.daemon=false
-android.useAndroidX=true
-RELEASE_KEY_PASSWORD=owpengram123
-RELEASE_KEY_ALIAS=owpengram
-RELEASE_STORE_PASSWORD=owpengram123
-EOF
+          org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g
+          org.gradle.parallel=true
+          org.gradle.caching=true
+          org.gradle.daemon=false
+          android.useAndroidX=true
+          RELEASE_KEY_PASSWORD=owpengram123
+          RELEASE_KEY_ALIAS=owpengram
+          RELEASE_STORE_PASSWORD=owpengram123
+          EOF
 
       - name: Make gradlew executable
         run: chmod +x gradlew
@@ -113,13 +115,11 @@ EOF
             ~/.gradle/caches
             ~/.gradle/wrapper
           key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*','**/gradle-wrapper.properties') }}
-          restore-keys: gradle-${{ runner.os }}-
 
-      - name: Build APK (arm64 + armeabi)
+      - name: Build APK
         run: |
           set -o pipefail
-          ./gradlew assembleRelease \
-            --no-daemon --stacktrace --max-workers=2 2>&1 | tee build.log
+          ./gradlew assembleRelease --no-daemon --stacktrace --max-workers=2 2>&1 | tee build.log
 
       - name: Find APKs
         if: always()
@@ -130,8 +130,8 @@ EOF
         run: |
           APK=$(find . -name "*.apk" | head -1)
           if [ -n "$APK" ]; then
-            $ANDROID_HOME/build-tools/36.0.0/apksigner verify --print-certs "$APK" | head -5 || true
-            $ANDROID_HOME/build-tools/36.0.0/aapt dump badging "$APK" | grep -E "package:|native-code" || true
+            "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs "$APK" | head -5 || true
+            "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$APK" | grep -E "package:|native-code" || true
           fi
 
       - name: Upload APK
@@ -152,7 +152,3 @@ EOF
             build.log
             apks.txt
           if-no-files-found: warn
-
-      - name: Final disk
-        if: always()
-        run: df -h
