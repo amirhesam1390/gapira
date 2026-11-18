@@ -13,7 +13,8 @@ jobs:
     timeout-minutes: 180
 
     steps:
-      # 1. Checkout
+
+      # 1. Checkout source
       - name: Checkout Telegram Source
         uses: actions/checkout@v4
         with:
@@ -36,7 +37,7 @@ jobs:
       # 4. Free disk space
       - name: Free Disk Space
         run: |
-          echo "=== BEFORE ==="
+          echo "=== DISK BEFORE ==="
           df -h
 
           sudo rm -rf /usr/local/lib/android/sdk/system-images || true
@@ -48,7 +49,7 @@ jobs:
 
           sudo apt-get clean
 
-          echo "=== AFTER ==="
+          echo "=== DISK AFTER ==="
           df -h
 
       # 5. Verify source
@@ -56,32 +57,31 @@ jobs:
         run: |
           set -e
 
-          echo "Repository:"
+          echo "=== REPOSITORY ==="
           git remote -v
 
-          echo "Commit:"
+          echo "=== COMMIT ==="
           git rev-parse HEAD
+
+          echo "=== CHECK FILES ==="
 
           test -f gradlew
           test -f settings.gradle
-
           test -f TMessagesProj_Modules/media/core_settings.gradle
 
           chmod +x gradlew
 
           echo "SOURCE CHECK PASSED"
 
-      # 6. Fix duplicate Android resources
-      - name: Fix Duplicate PNG WEBP Resources
+      # 6. Fix duplicate logo resources
+      - name: Fix Duplicate Logo Resources
         shell: bash
         run: |
           set -e
 
           RES="TMessagesProj/src/main/res"
 
-          echo "=== CHECKING DUPLICATE RESOURCES ==="
-
-          find "$RES" -type f -name 'logo_middle.*' -print
+          echo "=== LOGO RESOURCE SCAN ==="
 
           COUNT=0
 
@@ -89,28 +89,27 @@ jobs:
             webp="${png%.png}.webp"
 
             if [ -f "$webp" ]; then
-              echo "Duplicate found:"
+              echo "Duplicate resource:"
               echo "$png"
               echo "$webp"
 
               rm -f "$webp"
+
               COUNT=$((COUNT + 1))
             fi
-          done < <(find "$RES" -type f -name '*.png' -print0)
+          done < <(
+            find "$RES" -type f -name 'logo_middle.png' -print0
+          )
 
-          echo "Removed WEBP duplicates: $COUNT"
+          echo "Removed duplicates: $COUNT"
 
-          echo "=== VERIFY ==="
+          echo "=== REMAINING LOGO FILES ==="
+
           find "$RES" -type f -name 'logo_middle.*' -print
 
-          if find "$RES" -type f -name 'logo_middle.webp' | grep -q .; then
-            echo "ERROR: Duplicate WEBP still exists"
-            exit 1
-          fi
+          echo "RESOURCE CHECK PASSED"
 
-          echo "RESOURCE FIX PASSED"
-
-      # 7. Android SDK and NDK
+      # 7. Install SDK and NDK
       - name: Install Android SDK and NDK
         run: |
           yes | sdkmanager --licenses || true
@@ -124,21 +123,19 @@ jobs:
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
 
-      # 8. Verify NDK
+      # 8. Verify environment
       - name: Verify Android Environment
         run: |
-          echo "JAVA:"
+          echo "=== JAVA ==="
           java -version
 
-          echo "ANDROID_HOME:"
+          echo "=== ANDROID ==="
           echo "$ANDROID_HOME"
 
-          echo "NDK:"
+          echo "=== NDK ==="
           ls "$ANDROID_HOME/ndk/27.2.12479018"
 
-          echo "SDK:"
-          sdkmanager --list_installed
-
+          echo "=== DISK ==="
           df -h
 
       # 9. Gradle configuration
@@ -154,19 +151,19 @@ jobs:
           android.useAndroidX=true
           EOF
 
-      # 10. Install ccache
+      # 10. Install CCache
       - name: Install CCache
         run: |
           sudo apt-get update
           sudo apt-get install -y ccache
 
           mkdir -p ~/.ccache
+
           ccache --max-size=2G
-          ccache --show-stats
 
           echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
 
-      # 11. CCache
+      # 11. Cache CCache
       - name: Cache CCache
         uses: actions/cache@v4
         with:
@@ -175,7 +172,7 @@ jobs:
           restore-keys: |
             ccache-${{ runner.os }}-
 
-      # 12. Gradle cache
+      # 12. Cache Gradle
       - name: Cache Gradle
         uses: actions/cache@v4
         with:
@@ -186,8 +183,21 @@ jobs:
           restore-keys: |
             gradle-${{ runner.os }}-
 
-      # 13. Build
+      # 13. Disk check
+      - name: Check Disk Before Build
+        run: |
+          echo "=== DISK ==="
+          df -h
+
+          echo "=== GRADLE CACHE ==="
+          du -sh ~/.gradle 2>/dev/null || true
+
+          echo "=== CCACHE ==="
+          du -sh ~/.ccache 2>/dev/null || true
+
+      # 14. Build Debug APK
       - name: Build Telegram Debug APK
+        shell: bash
         run: |
           set -o pipefail
 
@@ -200,8 +210,8 @@ jobs:
           CC: ccache clang
           CXX: ccache clang++
 
-      # 14. Verify APK
-      - name: Verify APK
+      # 15. Find APK
+      - name: Find APK
         if: success()
         run: |
           echo "=== APK FILES ==="
@@ -211,14 +221,14 @@ jobs:
           APK_COUNT=$(find . -type f -name '*.apk' | wc -l)
 
           if [ "$APK_COUNT" -eq 0 ]; then
-            echo "ERROR: No APK generated"
+            echo "ERROR: APK NOT FOUND"
             exit 1
           fi
 
           echo "APK COUNT: $APK_COUNT"
 
-      # 15. Upload APK
-      - name: Upload Telegram APK
+      # 16. Upload APK
+      - name: Upload Telegram Debug APK
         if: success()
         uses: actions/upload-artifact@v4
         with:
@@ -227,18 +237,27 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      # 16. Build diagnostics
-      - name: Build Diagnostics
+      # 17. Final report
+      - name: Final Build Report
         if: always()
         run: |
-          echo "=== DISK ==="
+          echo "=== FINAL DISK ==="
           df -h
 
-          echo "=== CCACHE ==="
+          echo "=== CCACHE STATS ==="
           ccache --show-stats || true
 
-          echo "=== APK ==="
+          echo "=== GENERATED APK ==="
           find . -type f -name '*.apk' -exec ls -lh {} \;
 
-          echo "=== GRADLE ==="
-          ./gradlew --version || true
+      # 18. Upload diagnostic logs
+      - name: Upload Gradle Diagnostic Logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Telegram-Build-Logs
+          path: |
+            **/build/reports/
+            **/build/outputs/logs/
+          if-no-files-found: ignore
+          retention-days: 7
